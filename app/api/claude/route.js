@@ -175,6 +175,14 @@ async function forwardAnthropic(anthropicBody, key) {
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     console.log(`[/api/claude] Anthropic attempt ${attempt}/${maxAttempts}`);
+    console.log(
+      "[/api/claude] Outbound raw JSON body (complete string sent to Anthropic, pipeline path):",
+      payload,
+    );
+    console.log(
+      "[/api/claude] Outbound raw JSON body UTF-8 byte length (pipeline path):",
+      Buffer.byteLength(payload, "utf8"),
+    );
 
     const upstream = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -349,15 +357,18 @@ export async function POST(request) {
     payloadTotalChars: payload.length,
   });
 
-  console.log(
-    "[/api/claude] Outbound raw JSON body (complete string sent to Anthropic):",
-    payload,
-  );
-
   const maxAttempts = 3;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     console.log(`[/api/claude] Anthropic attempt ${attempt}/${maxAttempts}`);
+    console.log(
+      "[/api/claude] Outbound raw JSON body (complete string sent to Anthropic, legacy/intake path):",
+      payload,
+    );
+    console.log(
+      "[/api/claude] Outbound raw JSON body UTF-8 byte length (legacy/intake path):",
+      Buffer.byteLength(payload, "utf8"),
+    );
 
     const upstream = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
