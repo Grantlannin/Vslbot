@@ -27,7 +27,7 @@ const STAGE_ID_TO_STAGE_NAME = {
   8: "youtube",
 };
 
-const MODEL = "claude-sonnet-4-20250514";
+const MODEL = "claude-sonnet-4-6";
 
 function isPipelineRequest(body) {
   return (
