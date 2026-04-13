@@ -10,31 +10,20 @@ import {
   type SetStateAction,
 } from "react";
 import { getSupabase } from "@/lib/supabase";
-import { INTAKE_SYSTEM, INTAKE_DOC_PROMPT } from "@/lib/intake-prompts";
-import { callClaude } from "@/lib/claude-client";
 
 type ChatRole = "user" | "assistant";
 type ChatMessage = { role: ChatRole; content: string };
 type Client = { id: string; name: string; createdAt: string };
 type StageStatus = "running" | "review" | "approved" | "error" | undefined;
 
+type CardUiStatus = "idle" | "generating" | "ready" | "approved" | "error";
+
 type ChatPanelProps = {
-  activeStage: number;
+  chatStageId: number;
   stageOutputs: Record<number, string>;
   editingOutput: Record<number, string>;
   setEditingOutput: Dispatch<SetStateAction<Record<number, string>>>;
   stageName: string;
-};
-
-type StageOutputProps = {
-  stageId: number;
-  output: string | undefined;
-  editingOutput: Record<number, string>;
-  setEditingOutput: Dispatch<SetStateAction<Record<number, string>>>;
-  status: StageStatus;
-  onApprove: () => void;
-  onRerun: () => void;
-  onDraftPersist?: (stageId: number, text: string) => void;
 };
 
 type AnthropicResponseJson = {
@@ -42,7 +31,6 @@ type AnthropicResponseJson = {
   content?: { type: string; text?: string }[];
 };
 
-/** Pipeline stages 2–8 and side chat: prompts live on /api/claude only. */
 async function runPipelineClaudeApi(
   body: Record<string, unknown>,
 ): Promise<string> {
@@ -70,178 +58,29 @@ async function runPipelineClaudeApi(
   throw new Error("Unexpected response from the model (no text content).");
 }
 
-// ─── STAGE CONFIG ─────────────────────────────────────────────────────────────
-
-const STAGES = [
-  { id: 1, name: "Intake Bot", short: "Intake", description: "AI-powered client interview", color: "#c8a96e", requiresInput: false },
-  { id: 2, name: "Merge", short: "Merge", description: "Reconcile intake + onboard notes", color: "#8fb8c8", requiresInput: true },
-  { id: 3, name: "Headlines", short: "Headlines", description: "5 VSL headline variants", color: "#a8c89a", requiresInput: false },
-  { id: 4, name: "VSL Script", short: "VSL", description: "Full VSL script", color: "#c8a8c8", requiresInput: false },
-  { id: 5, name: "Slides", short: "Slides", description: "Gamma deck + speaker notes", color: "#c8b88a", requiresInput: false },
-  { id: 6, name: "Meta Ads", short: "Ads", description: "10 static ad concepts", color: "#c88a8a", requiresInput: false },
-  { id: 7, name: "Email Sequence", short: "Emails", description: "5-email pre-call sequence", color: "#8ac8b8", requiresInput: false },
-  { id: 8, name: "YouTube", short: "YouTube", description: "10 video outlines", color: "#a898c8", requiresInput: false },
-];
-
-// ─── COMPONENTS ───────────────────────────────────────────────────────────────
-
-function IntakeChat({ onComplete }: { onComplete: (doc: string) => void }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [done, setDone] = useState(false);
-  const [generatingDoc, setGeneratingDoc] = useState(false);
-  const [doc, setDoc] = useState("");
-  const [copied, setCopied] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
-
-  useEffect(() => {
-    initChat();
-  }, []);
-
-  async function initChat() {
-    setLoading(true);
-    try {
-      const text = await callClaude(INTAKE_SYSTEM, "I'm ready to begin.", 800);
-      const clean = text.replace(/\[INTERVIEW_COMPLETE\]/g, "").trim();
-      setMessages([{ role: "assistant" as const, content: clean }]);
-      if (text.includes("[INTERVIEW_COMPLETE]")) setDone(true);
-    } catch (e) {
-      const msg =
-        e instanceof Error ? e.message : "Something went wrong. Please refresh.";
-      setMessages([{ role: "assistant", content: msg }]);
-    }
-    setLoading(false);
-  }
-
-  async function send() {
-    const text = input.trim();
-    if (!text || loading || done) return;
-    const userMsg: ChatMessage = { role: "user", content: text };
-    const updated = [...messages, userMsg];
-    setMessages(updated);
-    setInput("");
-    setLoading(true);
-    if (textareaRef.current) textareaRef.current.style.height = "44px";
-    try {
-      const raw = await callClaude(INTAKE_SYSTEM, updated.map(m => `${m.role === "user" ? "CLIENT" : "ASSISTANT"}: ${m.content}`).join("\n\n"), 800);
-      const clean = raw.replace(/\[INTERVIEW_COMPLETE\]/g, "").trim();
-      const next: ChatMessage[] = [...updated, { role: "assistant", content: clean }];
-      setMessages(next);
-      if (raw.includes("[INTERVIEW_COMPLETE]")) setDone(true);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Error. Please try again.";
-      setMessages([...updated, { role: "assistant", content: msg }]);
-    }
-    setLoading(false);
-  }
-
-  async function generateDoc() {
-    setGeneratingDoc(true);
-    const transcript = messages.map(m => `${m.role === "user" ? "CLIENT" : "INTERVIEWER"}: ${m.content}`).join("\n\n");
-    try {
-      const text = await callClaude(INTAKE_DOC_PROMPT, `INTERVIEW TRANSCRIPT:\n\n${transcript}`, 2000);
-      setDoc(text);
-    } catch (e) {
-      setDoc("Error generating document. Please try again.");
-    }
-    setGeneratingDoc(false);
-  }
-
-  function copyDoc() {
-    navigator.clipboard.writeText(doc);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
-
-  function handleKey(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      void send();
-    }
-  }
-
-  function handleInput(e: ChangeEvent<HTMLTextAreaElement>) {
-    setInput(e.target.value);
-    const ta = textareaRef.current;
-    if (ta) {
-      ta.style.height = "44px";
-      ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
-    }
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 0 }}>
-      <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
-        {messages.map((m, i) => (
-          <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start" }}>
-            <div style={{ fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "#555", marginBottom: 4, fontFamily: "sans-serif" }}>
-              {m.role === "user" ? "You" : "Intake Bot"}
-            </div>
-            <div style={{ maxWidth: "85%", padding: "12px 16px", borderRadius: m.role === "user" ? "12px 12px 2px 12px" : "12px 12px 12px 2px", background: m.role === "user" ? "#1e1e1e" : "#161616", border: `1px solid ${m.role === "user" ? "#2a2a2a" : "#1e1e1e"}`, fontSize: 14, lineHeight: 1.7, color: m.role === "user" ? "#ccc" : "#ddd", whiteSpace: "pre-wrap" }}>
-              {m.content}
-            </div>
-          </div>
-        ))}
-        {loading && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
-            <div style={{ fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "#555", marginBottom: 4, fontFamily: "sans-serif" }}>Intake Bot</div>
-            <div style={{ padding: "12px 16px", background: "#161616", border: "1px solid #1e1e1e", borderRadius: "12px 12px 12px 2px", display: "flex", gap: 5, alignItems: "center" }}>
-              {[0,1,2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#555", animation: "pulse 1.2s infinite", animationDelay: `${i*0.2}s` }} />)}
-            </div>
-          </div>
-        )}
-        {done && !doc && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "24px 0", gap: 12 }}>
-            <div style={{ fontSize: 11, color: "#555", fontFamily: "sans-serif" }}>Interview complete</div>
-            <button onClick={generateDoc} disabled={generatingDoc} style={{ background: generatingDoc ? "#1e1e1e" : "#c8a96e", color: generatingDoc ? "#555" : "#0a0a0a", border: "none", borderRadius: 4, padding: "11px 28px", fontSize: 12, fontWeight: 600, cursor: generatingDoc ? "not-allowed" : "pointer", letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: "sans-serif" }}>
-              {generatingDoc ? "Generating..." : "Generate Intake Document"}
-            </button>
-          </div>
-        )}
-        {doc && (
-          <div style={{ border: "1px solid #222", borderRadius: 8, overflow: "hidden" }}>
-            <div style={{ background: "#141414", padding: "14px 18px", borderBottom: "1px solid #222", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ fontSize: 11, color: "#8fbc8f", fontFamily: "sans-serif", letterSpacing: "0.08em", textTransform: "uppercase" }}>Intake document ready</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={copyDoc} style={{ background: "#1e1e1e", color: copied ? "#8fbc8f" : "#aaa", border: "1px solid #2a2a2a", borderRadius: 4, padding: "6px 14px", fontSize: 11, cursor: "pointer", fontFamily: "sans-serif" }}>
-                  {copied ? "Copied" : "Copy"}
-                </button>
-                <button onClick={() => onComplete(doc)} style={{ background: "#c8a96e", color: "#0a0a0a", border: "none", borderRadius: 4, padding: "6px 14px", fontSize: 11, cursor: "pointer", fontFamily: "sans-serif", fontWeight: 600 }}>
-                  Use This Intake
-                </button>
-              </div>
-            </div>
-            <div style={{ padding: 20, background: "#0d0d0d", fontSize: 12, lineHeight: 1.8, color: "#bbb", whiteSpace: "pre-wrap", fontFamily: "monospace", maxHeight: 300, overflowY: "auto" }}>
-              {doc}
-            </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-      {!done && (
-        <div style={{ borderTop: "1px solid #1a1a1a", padding: "14px 20px", background: "#0a0a0a" }}>
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-            <textarea ref={textareaRef} value={input} onChange={handleInput} onKeyDown={handleKey} placeholder="Type your answer..." rows={1} disabled={loading} style={{ flex: 1, background: "#141414", border: "1px solid #222", borderRadius: 8, padding: "10px 14px", fontSize: 14, color: "#ddd", resize: "none", outline: "none", fontFamily: "Georgia, serif", lineHeight: 1.6, height: 44, minHeight: 44, maxHeight: 160 }} />
-            <button onClick={send} disabled={!input.trim() || loading} style={{ background: input.trim() && !loading ? "#c8a96e" : "#1a1a1a", color: input.trim() && !loading ? "#0a0a0a" : "#333", border: "none", borderRadius: 8, width: 44, height: 44, cursor: input.trim() && !loading ? "pointer" : "not-allowed", fontSize: 18, flexShrink: 0 }}>
-              ↑
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+const OUTPUT_SECTIONS = [
+  { id: 2, name: "Merge", color: "#8fb8c8" },
+  { id: 3, name: "Headlines", color: "#a8c89a" },
+  { id: 4, name: "VSL Script", color: "#c8a8c8" },
+  { id: 5, name: "Slides", color: "#c8b88a" },
+  { id: 6, name: "Meta Ads", color: "#c88a8a" },
+  { id: 7, name: "Email Sequence", color: "#8ac8b8" },
+  { id: 8, name: "YouTube", color: "#a898c8" },
+] as const;
 
 function normalizeDbStatus(s: string | null): StageStatus {
   if (!s) return undefined;
-  if (s === "approved" || s === "review" || s === "running" || s === "error") return s;
+  if (s === "approved" || s === "review" || s === "running" || s === "error")
+    return s;
   return undefined;
+}
+
+function toCardStatus(s: StageStatus, hasOutput: boolean): CardUiStatus {
+  if (s === "running") return "generating";
+  if (s === "approved") return "approved";
+  if (s === "error") return "error";
+  if (s === "review" || hasOutput) return "ready";
+  return "idle";
 }
 
 async function upsertPipelineStage(
@@ -264,20 +103,41 @@ async function upsertPipelineStage(
 }
 
 export default function Page() {
-  const [showChat, setShowChat] = useState(false);
+  const [showChat, setShowChat] = useState(true);
   const [clients, setClients] = useState<Client[]>([]);
   const [activeClient, setActiveClient] = useState<Client | null>(null);
-  const [activeStage, setActiveStage] = useState(1);
   const [newClientName, setNewClientName] = useState("");
   const [showNewClient, setShowNewClient] = useState(false);
 
+  const [intakeDocument, setIntakeDocument] = useState("");
   const [onboardNotes, setOnboardNotes] = useState("");
-  const [transcript, setTranscript] = useState("");
 
   const [stageOutputs, setStageOutputs] = useState<Record<number, string>>({});
-  const [stageStatus, setStageStatus] = useState<Record<number, StageStatus>>({});
-  const [runningStage, setRunningStage] = useState<number | null>(null);
+  const [stageStatus, setStageStatus] = useState<Record<number, StageStatus>>(
+    {},
+  );
+  const [runningStages, setRunningStages] = useState<Record<number, boolean>>(
+    {},
+  );
+  const [pipelineRunning, setPipelineRunning] = useState(false);
   const [editingOutput, setEditingOutput] = useState<Record<number, string>>({});
+
+  const [expandedStageId, setExpandedStageId] = useState<number | null>(null);
+  const [chatStageId, setChatStageId] = useState<number>(2);
+
+  const outputsRef = useRef(stageOutputs);
+  const intakeRef = useRef(intakeDocument);
+  const onboardRef = useRef(onboardNotes);
+
+  useEffect(() => {
+    outputsRef.current = stageOutputs;
+  }, [stageOutputs]);
+  useEffect(() => {
+    intakeRef.current = intakeDocument;
+  }, [intakeDocument]);
+  useEffect(() => {
+    onboardRef.current = onboardNotes;
+  }, [onboardNotes]);
 
   useEffect(() => {
     let cancelled = false;
@@ -315,13 +175,19 @@ export default function Page() {
       setStageOutputs({});
       setStageStatus({});
       setEditingOutput({});
+      setIntakeDocument("");
       return;
     }
     const outputs: Record<number, string> = {};
     const statuses: Record<number, StageStatus> = {};
     const editing: Record<number, string> = {};
+    let legacyIntake = "";
     for (const row of data ?? []) {
       const sid = row.stage_id;
+      if (sid === 1) {
+        legacyIntake = row.output ?? "";
+        continue;
+      }
       outputs[sid] = row.output ?? "";
       statuses[sid] = normalizeDbStatus(row.status);
       editing[sid] = row.output ?? "";
@@ -329,6 +195,7 @@ export default function Page() {
     setStageOutputs(outputs);
     setStageStatus(statuses);
     setEditingOutput(editing);
+    if (legacyIntake) setIntakeDocument(legacyIntake);
   }
 
   async function handleCreateClient(name: string) {
@@ -349,75 +216,171 @@ export default function Page() {
     };
     setClients((prev) => [client, ...prev]);
     setActiveClient(client);
-    setActiveStage(1);
     setStageOutputs({});
     setStageStatus({});
     setEditingOutput({});
+    setIntakeDocument("");
     setOnboardNotes("");
-    setTranscript("");
+    setExpandedStageId(null);
+    setChatStageId(2);
     setShowNewClient(false);
     setNewClientName("");
   }
 
   async function selectClient(client: Client) {
     setActiveClient(client);
-    setActiveStage(1);
     setOnboardNotes("");
-    setTranscript("");
+    setExpandedStageId(null);
+    setChatStageId(2);
     await loadPipelineStagesForClient(client.id);
   }
 
-  async function handleIntakeComplete(intakeDoc: string) {
-    const cid = activeClient?.id;
-    if (!cid) return;
-    setStageOutputs((prev) => ({ ...prev, 1: intakeDoc }));
-    setStageStatus((prev) => ({ ...prev, 1: "approved" }));
-    setEditingOutput((prev) => ({ ...prev, 1: intakeDoc }));
-    setActiveStage(2);
-    await upsertPipelineStage(cid, 1, intakeDoc, "approved");
+  function setRunning(stageId: number, v: boolean) {
+    setRunningStages((p) => ({ ...p, [stageId]: v }));
   }
 
-  async function runStage(stageId: number) {
-    const cid = activeClient?.id;
-    if (!cid) return;
+  type StageCtx = {
+    intakeDoc: string;
+    onboardNotes: string;
+    transcript: string;
+    mergedInput: string;
+    vslScript: string;
+  };
 
-    const mergedInput = stageOutputs[2] || "";
-    const vslScript = stageOutputs[4] || "";
-    const intakeDoc = stageOutputs[1] || "";
-
-    setRunningStage(stageId);
+  async function runSingleStage(
+    clientId: string,
+    stageId: number,
+    ctx: StageCtx,
+  ): Promise<string> {
+    const priorOut = outputsRef.current[stageId] ?? "";
+    setRunning(stageId, true);
     setStageStatus((prev) => ({ ...prev, [stageId]: "running" }));
-    await upsertPipelineStage(
-      cid,
-      stageId,
-      stageOutputs[stageId] ?? "",
-      "running",
-    );
-
+    await upsertPipelineStage(clientId, stageId, priorOut, "running");
     try {
       const output = await runPipelineClaudeApi({
         stageId,
-        intakeDoc,
-        onboardNotes,
-        transcript,
-        mergedInput,
-        vslScript,
+        intakeDoc: ctx.intakeDoc,
+        onboardNotes: ctx.onboardNotes,
+        transcript: ctx.transcript,
+        mergedInput: ctx.mergedInput,
+        vslScript: ctx.vslScript,
         maxTokens: 4000,
       });
       setStageOutputs((prev) => ({ ...prev, [stageId]: output }));
       setEditingOutput((prev) => ({ ...prev, [stageId]: output }));
       setStageStatus((prev) => ({ ...prev, [stageId]: "review" }));
-      await upsertPipelineStage(cid, stageId, output, "review");
+      outputsRef.current = { ...outputsRef.current, [stageId]: output };
+      await upsertPipelineStage(clientId, stageId, output, "review");
+      return output;
     } catch (e) {
+      console.error("runSingleStage", stageId, e);
       setStageStatus((prev) => ({ ...prev, [stageId]: "error" }));
-      await upsertPipelineStage(
+      await upsertPipelineStage(clientId, stageId, priorOut, "error");
+      throw e;
+    } finally {
+      setRunning(stageId, false);
+    }
+  }
+
+  function buildCtx(
+    mergedInput: string,
+    vslScript: string,
+    intakeOverride?: string,
+    onboardOverride?: string,
+  ): StageCtx {
+    return {
+      intakeDoc: intakeOverride ?? intakeRef.current,
+      onboardNotes: onboardOverride ?? onboardRef.current,
+      transcript: "",
+      mergedInput,
+      vslScript,
+    };
+  }
+
+  async function runFullPipeline() {
+    const cid = activeClient?.id;
+    if (!cid) return;
+    if (!intakeDocument.trim() || !onboardNotes.trim()) return;
+    setPipelineRunning(true);
+    const intake = intakeDocument;
+    const onboard = onboardNotes;
+    try {
+      const mergeOutput = await runSingleStage(cid, 2, {
+        intakeDoc: intake,
+        onboardNotes: onboard,
+        transcript: "",
+        mergedInput: "",
+        vslScript: "",
+      });
+
+      const headlinesP = runSingleStage(
+        cid,
+        3,
+        buildCtx(mergeOutput, "", intake, onboard),
+      );
+      const vslP = runSingleStage(
+        cid,
+        4,
+        buildCtx(mergeOutput, "", intake, onboard),
+      );
+
+      let vslOutput: string;
+      try {
+        vslOutput = await vslP;
+      } catch {
+        await headlinesP.catch(() => {});
+        throw new Error("VSL stage failed");
+      }
+
+      await Promise.all([
+        runSingleStage(cid, 5, buildCtx(mergeOutput, vslOutput, intake, onboard)),
+        runSingleStage(cid, 6, buildCtx(mergeOutput, vslOutput, intake, onboard)),
+        runSingleStage(cid, 7, buildCtx(mergeOutput, vslOutput, intake, onboard)),
+        runSingleStage(cid, 8, buildCtx(mergeOutput, vslOutput, intake, onboard)),
+      ]);
+
+      await headlinesP.catch((e) => console.error("Headlines error", e));
+    } catch (e) {
+      console.error("runFullPipeline", e);
+    } finally {
+      setPipelineRunning(false);
+    }
+  }
+
+  async function runOneSection(stageId: number) {
+    const cid = activeClient?.id;
+    if (!cid) return;
+    const o = outputsRef.current;
+    const mergeOut = o[2] || "";
+    const vslOut = o[4] || "";
+    const intake = intakeRef.current;
+    const onboard = onboardRef.current;
+    try {
+      if (stageId === 2) {
+        if (!intake.trim() || !onboard.trim()) return;
+        await runSingleStage(cid, 2, {
+          intakeDoc: intake,
+          onboardNotes: onboard,
+          transcript: "",
+          mergedInput: "",
+          vslScript: "",
+        });
+        return;
+      }
+      if (stageId === 3 || stageId === 4) {
+        if (!mergeOut.trim()) return;
+        await runSingleStage(cid, stageId, buildCtx(mergeOut, "", intake, onboard));
+        return;
+      }
+      if (!mergeOut.trim() || !vslOut.trim()) return;
+      await runSingleStage(
         cid,
         stageId,
-        stageOutputs[stageId] ?? "",
-        "error",
+        buildCtx(mergeOut, vslOut, intake, onboard),
       );
+    } catch {
+      /* status already error */
     }
-    setRunningStage(null);
   }
 
   async function approveStage(stageId: number) {
@@ -427,7 +390,7 @@ export default function Page() {
     setStageOutputs((prev) => ({ ...prev, [stageId]: finalOutput }));
     setStageStatus((prev) => ({ ...prev, [stageId]: "approved" }));
     setEditingOutput((prev) => ({ ...prev, [stageId]: finalOutput }));
-    if (stageId < 8) setActiveStage(stageId + 1);
+    outputsRef.current = { ...outputsRef.current, [stageId]: finalOutput };
     await upsertPipelineStage(cid, stageId, finalOutput, "approved");
   }
 
@@ -438,40 +401,66 @@ export default function Page() {
     void upsertPipelineStage(cid, stageId, text, "review");
   }
 
-  function getStageStatusColor(stageId: number) {
-    const s = stageStatus[stageId];
-    if (s === "approved") return "#8fbc8f";
-    if (s === "review") return "#c8a96e";
-    if (s === "running") return "#8ab4c8";
-    if (s === "error") return "#c87878";
-    return "#333";
+  function canRunSection(stageId: number): boolean {
+    const o = outputsRef.current;
+    const mergeOut = o[2] || "";
+    const vslOut = o[4] || "";
+    if (stageId === 2)
+      return intakeRef.current.trim().length > 0 && onboardRef.current.trim().length > 0;
+    if (stageId === 3 || stageId === 4) return mergeOut.trim().length > 0;
+    return mergeOut.trim().length > 0 && vslOut.trim().length > 0;
   }
 
-  function getStageStatusLabel(stageId: number) {
+  function cardLabel(stageId: number): CardUiStatus {
     const s = stageStatus[stageId];
-    if (s === "approved") return "Approved";
-    if (s === "review") return "Review";
-    if (s === "running") return "Running...";
-    if (s === "error") return "Error";
-    return "Pending";
+    const has = Boolean(
+      (stageOutputs[stageId] || editingOutput[stageId] || "").trim(),
+    );
+    return toCardStatus(s, has);
   }
 
-  const canRunStage = (stageId: number) => {
-    if (stageId === 1) return true;
-    if (stageId === 2) return stageStatus[1] === "approved" && onboardNotes.trim();
-    if (stageId === 3) return stageStatus[2] === "approved";
-    if (stageId === 4) return stageStatus[2] === "approved";
-    if (stageId === 5) return stageStatus[4] === "approved";
-    if (stageId === 6) return stageStatus[4] === "approved";
-    if (stageId === 7) return stageStatus[2] === "approved" && stageStatus[4] === "approved";
-    if (stageId === 8) return stageStatus[2] === "approved" && stageStatus[4] === "approved";
-    return false;
-  };
+  function cardStatusText(id: CardUiStatus): string {
+    switch (id) {
+      case "idle":
+        return "Idle";
+      case "generating":
+        return "Generating";
+      case "ready":
+        return "Ready";
+      case "approved":
+        return "Approved";
+      case "error":
+        return "Error";
+    }
+  }
 
-  const currentStageData = STAGES.find(s => s.id === activeStage);
+  function openCard(stageId: number) {
+    setExpandedStageId(stageId);
+    setChatStageId(stageId);
+  }
+
+  const chatSectionMeta = OUTPUT_SECTIONS.find((s) => s.id === chatStageId);
+  const expandedMeta = expandedStageId
+    ? OUTPUT_SECTIONS.find((s) => s.id === expandedStageId)
+    : null;
 
   return (
-    <div style={{ display: "flex", height: "100vh", minHeight: "100vh", background: "#0a0a0a", color: "#e0ddd5", fontFamily: "Georgia, serif", overflow: "hidden", position: "fixed", top: 0, left: 0, right: 0, bottom: 0 }}>
+    <div
+      style={{
+        display: "flex",
+        height: "100vh",
+        minHeight: "100vh",
+        background: "#0a0a0a",
+        color: "#e0ddd5",
+        fontFamily: "Georgia, serif",
+        overflow: "hidden",
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+      }}
+    >
       <style>{`
         * { box-sizing: border-box; }
         body, html { background: #0a0a0a !important; margin: 0; padding: 0; }
@@ -486,25 +475,67 @@ export default function Page() {
         ::-webkit-scrollbar-thumb{background:#222;border-radius:2px}
       `}</style>
 
-      {/* Sidebar */}
-      <div style={{ width: 220, borderRight: "1px solid #181818", display: "flex", flexDirection: "column", background: "#0d0d0d", flexShrink: 0 }}>
+      <div
+        style={{
+          width: 220,
+          borderRight: "1px solid #181818",
+          display: "flex",
+          flexDirection: "column",
+          background: "#0d0d0d",
+          flexShrink: 0,
+        }}
+      >
         <div style={{ padding: "20px 16px 16px", borderBottom: "1px solid #181818" }}>
-          <div style={{ fontSize: 15, color: "#c8a96e", fontWeight: 400 }}>VSL Pipeline</div>
+          <div style={{ fontSize: 15, color: "#c8a96e", fontWeight: 400 }}>
+            VSL Pipeline
+          </div>
         </div>
-
         <div style={{ padding: "12px 12px 8px" }}>
-          <button onClick={() => setShowNewClient(true)} style={{ width: "100%", background: "#161616", border: "1px solid #222", borderRadius: 6, padding: "8px 12px", fontSize: 12, color: "#aaa", cursor: "pointer", fontFamily: "sans-serif", letterSpacing: "0.05em", textAlign: "left" }}>
+          <button
+            type="button"
+            onClick={() => setShowNewClient(true)}
+            style={{
+              width: "100%",
+              background: "#161616",
+              border: "1px solid #222",
+              borderRadius: 6,
+              padding: "8px 12px",
+              fontSize: 12,
+              color: "#aaa",
+              cursor: "pointer",
+              fontFamily: "sans-serif",
+              letterSpacing: "0.05em",
+              textAlign: "left",
+            }}
+          >
             + New Client
           </button>
         </div>
-
         {showNewClient && (
           <div style={{ padding: "8px 12px", borderBottom: "1px solid #181818" }}>
-            <input value={newClientName} onChange={e => setNewClientName(e.target.value)} onKeyDown={(e) =>
-              e.key === "Enter" && void handleCreateClient(newClientName)
-            } placeholder="Client name..." autoFocus style={{ width: "100%", background: "#161616", border: "1px solid #333", borderRadius: 4, padding: "7px 10px", fontSize: 12, color: "#ddd", boxSizing: "border-box", fontFamily: "sans-serif" }} />
+            <input
+              value={newClientName}
+              onChange={(e) => setNewClientName(e.target.value)}
+              onKeyDown={(e) =>
+                e.key === "Enter" && void handleCreateClient(newClientName)
+              }
+              placeholder="Client name..."
+              autoFocus
+              style={{
+                width: "100%",
+                background: "#161616",
+                border: "1px solid #333",
+                borderRadius: 4,
+                padding: "7px 10px",
+                fontSize: 12,
+                color: "#ddd",
+                boxSizing: "border-box",
+                fontFamily: "sans-serif",
+              }}
+            />
             <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
               <button
+                type="button"
                 onClick={() => void handleCreateClient(newClientName)}
                 style={{
                   flex: 1,
@@ -521,186 +552,680 @@ export default function Page() {
               >
                 Create
               </button>
-              <button onClick={() => { setShowNewClient(false); setNewClientName(""); }} style={{ flex: 1, background: "#1a1a1a", color: "#888", border: "1px solid #222", borderRadius: 4, padding: "6px", fontSize: 11, cursor: "pointer", fontFamily: "sans-serif" }}>Cancel</button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNewClient(false);
+                  setNewClientName("");
+                }}
+                style={{
+                  flex: 1,
+                  background: "#1a1a1a",
+                  color: "#888",
+                  border: "1px solid #222",
+                  borderRadius: 4,
+                  padding: "6px",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  fontFamily: "sans-serif",
+                }}
+              >
+                Cancel
+              </button>
             </div>
           </div>
         )}
-
         <div style={{ flex: 1, overflowY: "auto", padding: "8px 12px" }}>
-          {clients.length === 0 && <div style={{ fontSize: 11, color: "#444", fontFamily: "sans-serif", padding: "8px 0" }}>No clients yet</div>}
-          {clients.map(client => (
+          {clients.length === 0 && (
+            <div
+              style={{
+                fontSize: 11,
+                color: "#444",
+                fontFamily: "sans-serif",
+                padding: "8px 0",
+              }}
+            >
+              No clients yet
+            </div>
+          )}
+          {clients.map((client) => (
             <div
               key={client.id}
+              role="button"
+              tabIndex={0}
               onClick={() => void selectClient(client)}
-              style={{ padding: "10px 10px", borderRadius: 6, cursor: "pointer", marginBottom: 2, background: activeClient?.id === client.id ? "#161616" : "transparent", border: activeClient?.id === client.id ? "1px solid #222" : "1px solid transparent", transition: "all 0.15s" }}>
-              <div style={{ fontSize: 13, color: activeClient?.id === client.id ? "#e0ddd5" : "#888" }}>{client.name}</div>
-              <div style={{ fontSize: 10, color: "#444", fontFamily: "sans-serif", marginTop: 2 }}>{client.createdAt}</div>
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") void selectClient(client);
+              }}
+              style={{
+                padding: "10px 10px",
+                borderRadius: 6,
+                cursor: "pointer",
+                marginBottom: 2,
+                background:
+                  activeClient?.id === client.id ? "#161616" : "transparent",
+                border:
+                  activeClient?.id === client.id
+                    ? "1px solid #222"
+                    : "1px solid transparent",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 13,
+                  color: activeClient?.id === client.id ? "#e0ddd5" : "#888",
+                }}
+              >
+                {client.name}
+              </div>
+              <div
+                style={{
+                  fontSize: 10,
+                  color: "#444",
+                  fontFamily: "sans-serif",
+                  marginTop: 2,
+                }}
+              >
+                {client.createdAt}
+              </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Main area */}
       {!activeClient ? (
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
-          <div style={{ fontSize: 13, color: "#555", fontFamily: "sans-serif" }}>Select or create a client to begin</div>
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexDirection: "column",
+            gap: 12,
+          }}
+        >
+          <div style={{ fontSize: 13, color: "#555", fontFamily: "sans-serif" }}>
+            Select or create a client to begin
+          </div>
         </div>
       ) : (
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-
-          {/* Header */}
-          <div style={{ borderBottom: "1px solid #181818", padding: "14px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", background: "#0d0d0d", flexShrink: 0 }}>
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+            minWidth: 0,
+          }}
+        >
+          <div
+            style={{
+              borderBottom: "1px solid #181818",
+              padding: "14px 20px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              background: "#0d0d0d",
+              flexShrink: 0,
+            }}
+          >
             <div>
-              <div style={{ fontSize: 11, color: "#555", fontFamily: "sans-serif", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 2 }}>Active client</div>
-              <div style={{ fontSize: 16, color: "#e0ddd5" }}>{activeClient.name}</div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "#555",
+                  fontFamily: "sans-serif",
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  marginBottom: 2,
+                }}
+              >
+                Active client
+              </div>
+              <div style={{ fontSize: 16, color: "#e0ddd5" }}>
+                {activeClient.name}
+              </div>
             </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              {STAGES.map(s => (
-                <div key={s.id} onClick={() => setActiveStage(s.id)} title={s.name} style={{ width: 28, height: 28, borderRadius: "50%", background: activeStage === s.id ? "#1e1e1e" : "#141414", border: `2px solid ${getStageStatusColor(s.id)}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: getStageStatusColor(s.id), fontFamily: "sans-serif", fontWeight: 600, transition: "all 0.15s" }}>
-                  {s.id}
-                </div>
-              ))}
-            </div>
+            <button
+              type="button"
+              onClick={() => setShowChat((p) => !p)}
+              style={{
+                background: showChat ? "#c8a96e22" : "#141414",
+                color: showChat ? "#c8a96e" : "#666",
+                border: `1px solid ${showChat ? "#c8a96e44" : "#222"}`,
+                borderRadius: 4,
+                padding: "6px 14px",
+                fontSize: 11,
+                cursor: "pointer",
+                fontFamily: "sans-serif",
+              }}
+            >
+              {showChat ? "Hide Chat" : "Chat"}
+            </button>
           </div>
 
-          {/* Stage area */}
-          <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-
-            {/* Stage header */}
-            <div style={{ padding: "16px 24px 12px", borderBottom: "1px solid #141414", flexShrink: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "row",
+              overflow: "hidden",
+              minHeight: 0,
+            }}
+          >
+            <div
+              style={{
+                flex: 1,
+                overflowY: "auto",
+                padding: "20px",
+                minWidth: 0,
+              }}
+            >
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 16,
+                  marginBottom: 16,
+                }}
+              >
                 <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ width: 8, height: 8, borderRadius: "50%", background: currentStageData?.color }} />
-                    <div style={{ fontSize: 14, color: "#e0ddd5", fontWeight: 400 }}>Stage {activeStage}: {currentStageData?.name}</div>
-                    <div style={{ fontSize: 10, color: getStageStatusColor(activeStage), fontFamily: "sans-serif", letterSpacing: "0.08em", textTransform: "uppercase" }}>{getStageStatusLabel(activeStage)}</div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "#888",
+                      fontFamily: "sans-serif",
+                      marginBottom: 8,
+                      letterSpacing: "0.06em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Intake Document
                   </div>
-                  <div style={{ fontSize: 11, color: "#555", fontFamily: "sans-serif", marginTop: 3, marginLeft: 18 }}>{currentStageData?.description}</div>
+                  <textarea
+                    value={intakeDocument}
+                    onChange={(e) => setIntakeDocument(e.target.value)}
+                    placeholder="Paste or type the client intake document here..."
+                    style={{
+                      width: "100%",
+                      minHeight: 160,
+                      background: "#111",
+                      border: "1px solid #222",
+                      borderRadius: 8,
+                      padding: 14,
+                      fontSize: 13,
+                      color: "#ddd",
+                      resize: "vertical",
+                      fontFamily: "Georgia, serif",
+                      lineHeight: 1.7,
+                    }}
+                  />
                 </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <button onClick={() => setShowChat(p => !p)} style={{ background: showChat ? "#c8a96e22" : "#141414", color: showChat ? "#c8a96e" : "#666", border: `1px solid ${showChat ? "#c8a96e44" : "#222"}`, borderRadius: 4, padding: "5px 12px", fontSize: 11, cursor: "pointer", fontFamily: "sans-serif", letterSpacing: "0.06em" }}>
-                    {showChat ? "Hide Chat" : "Chat"}
-                  </button>
-                  {activeStage > 1 && <button onClick={() => setActiveStage(activeStage - 1)} style={{ background: "#141414", color: "#888", border: "1px solid #222", borderRadius: 4, padding: "6px 14px", fontSize: 11, cursor: "pointer", fontFamily: "sans-serif" }}>Back</button>}
-                  {activeStage < 8 && stageStatus[activeStage] === "approved" && <button onClick={() => setActiveStage(activeStage + 1)} style={{ background: "#141414", color: "#888", border: "1px solid #222", borderRadius: 4, padding: "6px 14px", fontSize: 11, cursor: "pointer", fontFamily: "sans-serif" }}>Next Stage</button>}
+                <div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "#888",
+                      fontFamily: "sans-serif",
+                      marginBottom: 8,
+                      letterSpacing: "0.06em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Onboard Notes
+                  </div>
+                  <textarea
+                    value={onboardNotes}
+                    onChange={(e) => setOnboardNotes(e.target.value)}
+                    placeholder="Your notes from the onboard call — angle, mechanism, avatar, awareness, gaps..."
+                    style={{
+                      width: "100%",
+                      minHeight: 160,
+                      background: "#111",
+                      border: "1px solid #222",
+                      borderRadius: 8,
+                      padding: 14,
+                      fontSize: 13,
+                      color: "#ddd",
+                      resize: "vertical",
+                      fontFamily: "Georgia, serif",
+                      lineHeight: 1.7,
+                    }}
+                  />
                 </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void runFullPipeline()}
+                disabled={
+                  pipelineRunning ||
+                  !intakeDocument.trim() ||
+                  !onboardNotes.trim()
+                }
+                style={{
+                  marginBottom: 24,
+                  background:
+                    pipelineRunning || !intakeDocument.trim() || !onboardNotes.trim()
+                      ? "#1a1a1a"
+                      : "#c8a96e",
+                  color:
+                    pipelineRunning || !intakeDocument.trim() || !onboardNotes.trim()
+                      ? "#444"
+                      : "#0a0a0a",
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "12px 28px",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor:
+                    pipelineRunning || !intakeDocument.trim() || !onboardNotes.trim()
+                      ? "not-allowed"
+                      : "pointer",
+                  fontFamily: "sans-serif",
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                }}
+              >
+                {pipelineRunning ? "Running pipeline…" : "Run Full Pipeline"}
+              </button>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+                  gap: 14,
+                }}
+              >
+                {OUTPUT_SECTIONS.map((sec) => {
+                  const st = cardLabel(sec.id);
+                  const isRun = runningStages[sec.id] || false;
+                  const text =
+                    editingOutput[sec.id] ?? stageOutputs[sec.id] ?? "";
+                  const preview =
+                    text.trim().length > 0
+                      ? text.slice(0, 280) + (text.length > 280 ? "…" : "")
+                      : "No output yet.";
+                  return (
+                    <div
+                      key={sec.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openCard(sec.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") openCard(sec.id);
+                      }}
+                      style={{
+                        border: `1px solid ${st === "error" ? "#4a2828" : "#222"}`,
+                        borderRadius: 10,
+                        padding: 14,
+                        background: "#101010",
+                        cursor: "pointer",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 10,
+                        minHeight: 200,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: "50%",
+                              background: sec.color,
+                            }}
+                          />
+                          <div
+                            style={{
+                              fontSize: 14,
+                              color: "#e0ddd5",
+                              fontWeight: 400,
+                            }}
+                          >
+                            {sec.name}
+                          </div>
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 10,
+                            fontFamily: "sans-serif",
+                            color:
+                              st === "approved"
+                                ? "#8fbc8f"
+                                : st === "generating"
+                                  ? "#8ab4c8"
+                                  : st === "ready"
+                                    ? "#c8a96e"
+                                    : st === "error"
+                                      ? "#c87878"
+                                      : "#555",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.06em",
+                          }}
+                        >
+                          {isRun ? "Generating" : cardStatusText(st)}
+                        </div>
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "#666",
+                          lineHeight: 1.6,
+                          whiteSpace: "pre-wrap",
+                          flex: 1,
+                          overflow: "hidden",
+                          fontFamily: "sans-serif",
+                        }}
+                      >
+                        {preview}
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          flexWrap: "wrap",
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => void runOneSection(sec.id)}
+                          disabled={
+                            isRun ||
+                            pipelineRunning ||
+                            !canRunSection(sec.id)
+                          }
+                          style={{
+                            background:
+                              !isRun &&
+                              !pipelineRunning &&
+                              canRunSection(sec.id)
+                                ? "#1e2e1e"
+                                : "#1a1a1a",
+                            color:
+                              !isRun &&
+                              !pipelineRunning &&
+                              canRunSection(sec.id)
+                                ? "#8fbc8f"
+                                : "#444",
+                            border: "1px solid #2a2a2a",
+                            borderRadius: 4,
+                            padding: "6px 12px",
+                            fontSize: 10,
+                            cursor:
+                              isRun || pipelineRunning || !canRunSection(sec.id)
+                                ? "not-allowed"
+                                : "pointer",
+                            fontFamily: "sans-serif",
+                          }}
+                        >
+                          Run
+                        </button>
+                        {(st === "ready" || st === "approved") && (
+                          <button
+                            type="button"
+                            onClick={() => void approveStage(sec.id)}
+                            disabled={st === "approved"}
+                            style={{
+                              background:
+                                st === "approved" ? "#1a2e1a" : "#c8a96e",
+                              color:
+                                st === "approved" ? "#6a8a6a" : "#0a0a0a",
+                              border: "none",
+                              borderRadius: 4,
+                              padding: "6px 12px",
+                              fontSize: 10,
+                              cursor:
+                                st === "approved" ? "default" : "pointer",
+                              fontFamily: "sans-serif",
+                              fontWeight: 600,
+                            }}
+                          >
+                            Approve
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
-            {/* Stage content */}
-            <div style={{ flex: 1, overflow: "hidden" }}>
-
-              {/* Stage 1: Intake Bot */}
-              {activeStage === 1 && (
-                <div style={{ height: "100%" }}>
-                  {stageStatus[1] === "approved" ? (
-                    <div style={{ padding: 24 }}>
-                      <div style={{ background: "#0d1a0d", border: "1px solid #1a2e1a", borderRadius: 8, padding: 16, marginBottom: 16 }}>
-                        <div style={{ fontSize: 11, color: "#8fbc8f", fontFamily: "sans-serif", marginBottom: 8, letterSpacing: "0.08em", textTransform: "uppercase" }}>Intake complete and approved</div>
-                        <div style={{ fontSize: 12, color: "#6a9a6a", fontFamily: "sans-serif" }}>The intake document has been saved. Proceed to Stage 2 to merge with your onboard notes.</div>
-                      </div>
-                      <div style={{ background: "#111", border: "1px solid #1e1e1e", borderRadius: 8, padding: 16, maxHeight: 400, overflowY: "auto" }}>
-                        <div style={{ fontSize: 11, color: "#555", fontFamily: "monospace", whiteSpace: "pre-wrap", lineHeight: 1.8 }}>{stageOutputs[1]}</div>
-                      </div>
-                    </div>
-                  ) : (
-                    <IntakeChat onComplete={(doc) => void handleIntakeComplete(doc)} />
-                  )}
-                </div>
-              )}
-
-              {/* Stage 2: Merge */}
-              {activeStage === 2 && (
-                <div style={{ padding: 24, overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
-                  {stageStatus[2] !== "approved" && (
-                    <div style={{ marginBottom: 20 }}>
-                      <div style={{ fontSize: 11, color: "#888", fontFamily: "sans-serif", marginBottom: 8, letterSpacing: "0.05em", textTransform: "uppercase" }}>Onboard Notes (required)</div>
-                      <textarea value={onboardNotes} onChange={e => setOnboardNotes(e.target.value)} placeholder="Paste your onboard call notes here — angle decision, mechanism name, avatar type, awareness level, strategic notes, any gaps from intake..." style={{ width: "100%", minHeight: 140, background: "#111", border: "1px solid #222", borderRadius: 6, padding: 14, fontSize: 13, color: "#ddd", resize: "vertical", boxSizing: "border-box", fontFamily: "Georgia, serif", lineHeight: 1.7 }} />
-                      <div style={{ fontSize: 11, color: "#888", fontFamily: "sans-serif", marginBottom: 8, marginTop: 16, letterSpacing: "0.05em", textTransform: "uppercase" }}>Onboard Transcript (optional)</div>
-                      <textarea value={transcript} onChange={e => setTranscript(e.target.value)} placeholder="Paste your onboard transcript here if you have one..." style={{ width: "100%", minHeight: 100, background: "#111", border: "1px solid #222", borderRadius: 6, padding: 14, fontSize: 13, color: "#ddd", resize: "vertical", boxSizing: "border-box", fontFamily: "Georgia, serif", lineHeight: 1.7 }} />
-                      <button
-                        onClick={() => void runStage(2)}
-                        disabled={!canRunStage(2) || runningStage === 2} style={{ marginTop: 16, background: canRunStage(2) ? "#c8a96e" : "#1a1a1a", color: canRunStage(2) ? "#0a0a0a" : "#444", border: "none", borderRadius: 4, padding: "10px 24px", fontSize: 12, cursor: canRunStage(2) ? "pointer" : "not-allowed", fontFamily: "sans-serif", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                        {runningStage === 2 ? "Merging..." : "Run Merge"}
-                      </button>
-                    </div>
-                  )}
-                  {(stageStatus[2] === "review" || stageStatus[2] === "approved") && (
-                    <StageOutput
-                      stageId={2}
-                      output={stageOutputs[2]}
-                      editingOutput={editingOutput}
-                      setEditingOutput={setEditingOutput}
-                      status={stageStatus[2]}
-                      onApprove={() => void approveStage(2)}
-                      onRerun={() => void runStage(2)}
-                      onDraftPersist={persistStageDraft}
-                    />
-                  )}
-                </div>
-              )}
-
-              {/* Stages 3-8: Generated outputs */}
-              {activeStage >= 3 && (
-                <div style={{ padding: 24, overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
-                  {!stageStatus[activeStage] && (
-                    <div>
-                      {activeStage === 3 && !stageStatus[4] && (
-                        <div style={{ background: "#1a1600", border: "1px solid #2a2200", borderRadius: 6, padding: 12, marginBottom: 16, fontSize: 12, color: "#aa9960", fontFamily: "sans-serif" }}>
-                          Note: VSL Script (Stage 4) hasn't been generated yet. Headlines will be generated from the merged input only. You can regenerate after Stage 4 is approved.
-                        </div>
-                      )}
-                      {!canRunStage(activeStage) && (
-                        <div style={{ background: "#1a1010", border: "1px solid #2a1818", borderRadius: 6, padding: 12, marginBottom: 16, fontSize: 12, color: "#aa6060", fontFamily: "sans-serif" }}>
-                          {activeStage === 5 || activeStage === 6 ? "Complete Stage 4 (VSL Script) first." : activeStage === 7 || activeStage === 8 ? "Complete Stages 2 (Merge) and 4 (VSL Script) first." : "Complete previous stages first."}
-                        </div>
-                      )}
-                      <button
-                        onClick={() => void runStage(activeStage)}
-                        disabled={!canRunStage(activeStage) || runningStage === activeStage} style={{ background: canRunStage(activeStage) ? "#c8a96e" : "#1a1a1a", color: canRunStage(activeStage) ? "#0a0a0a" : "#444", border: "none", borderRadius: 4, padding: "10px 24px", fontSize: 12, cursor: canRunStage(activeStage) ? "pointer" : "not-allowed", fontFamily: "sans-serif", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                        {runningStage === activeStage ? `Generating ${currentStageData?.name}...` : `Generate ${currentStageData?.name}`}
-                      </button>
-                    </div>
-                  )}
-                  {(stageStatus[activeStage] === "running") && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#8ab4c8", fontFamily: "sans-serif", fontSize: 13 }}>
-                      <div style={{ width: 16, height: 16, border: "2px solid #8ab4c8", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                      Generating {currentStageData?.name}...
-                    </div>
-                  )}
-                  {(stageStatus[activeStage] === "review" || stageStatus[activeStage] === "approved") && (
-                    <StageOutput
-                      stageId={activeStage}
-                      output={stageOutputs[activeStage]}
-                      editingOutput={editingOutput}
-                      setEditingOutput={setEditingOutput}
-                      status={stageStatus[activeStage]}
-                      onApprove={() => void approveStage(activeStage)}
-                      onRerun={() => void runStage(activeStage)}
-                      onDraftPersist={persistStageDraft}
-                    />
-                  )}
-                </div>
-              )}
-            </div>
+            {showChat && (
+              <ChatPanel
+                chatStageId={chatStageId}
+                stageOutputs={stageOutputs}
+                editingOutput={editingOutput}
+                setEditingOutput={setEditingOutput}
+                stageName={chatSectionMeta?.name ?? "Section"}
+              />
+            )}
           </div>
         </div>
       )}
-      {showChat && activeClient && (
-        <ChatPanel
-          activeStage={activeStage}
-          stageOutputs={stageOutputs}
-          editingOutput={editingOutput}
-          setEditingOutput={setEditingOutput}
-          stageName={currentStageData?.name || ""}
+
+      {expandedStageId && expandedMeta && activeClient && (
+        <ExpandedSectionModal
+          stageId={expandedStageId}
+          name={expandedMeta.name}
+          color={expandedMeta.color}
+          status={stageStatus[expandedStageId]}
+          text={editingOutput[expandedStageId] ?? stageOutputs[expandedStageId] ?? ""}
+          running={runningStages[expandedStageId] || false}
+          onClose={() => setExpandedStageId(null)}
+          onChangeText={(t) =>
+            setEditingOutput((p) => ({ ...p, [expandedStageId]: t }))
+          }
+          onBlurPersist={(latest) => persistStageDraft(expandedStageId, latest)}
+          onApprove={() => void approveStage(expandedStageId)}
+          onRun={() => void runOneSection(expandedStageId)}
+          canRun={canRunSection(expandedStageId)}
+          pipelineRunning={pipelineRunning}
         />
       )}
     </div>
   );
 }
 
+function ExpandedSectionModal({
+  stageId,
+  name,
+  color,
+  status,
+  text,
+  running,
+  onClose,
+  onChangeText,
+  onBlurPersist,
+  onApprove,
+  onRun,
+  canRun,
+  pipelineRunning,
+}: {
+  stageId: number;
+  name: string;
+  color: string;
+  status: StageStatus;
+  text: string;
+  running: boolean;
+  onClose: () => void;
+  onChangeText: (t: string) => void;
+  onBlurPersist: (latest: string) => void;
+  onApprove: () => void;
+  onRun: () => void;
+  canRun: boolean;
+  pipelineRunning: boolean;
+}) {
+  const approved = status === "approved";
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.72)",
+        zIndex: 50,
+        display: "flex",
+        alignItems: "stretch",
+        justifyContent: "center",
+        padding: "24px 48px 24px 244px",
+      }}
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={`section-${stageId}-title`}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          flex: 1,
+          maxWidth: 900,
+          background: "#0d0d0d",
+          border: "1px solid #252525",
+          borderRadius: 10,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          boxShadow: "0 24px 80px rgba(0,0,0,0.5)",
+        }}
+      >
+        <div
+          style={{
+            padding: "14px 18px",
+            borderBottom: "1px solid #1e1e1e",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexShrink: 0,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                background: color,
+              }}
+            />
+            <div
+              id={`section-${stageId}-title`}
+              style={{ fontSize: 16, color: "#e0ddd5" }}
+            >
+              {name}
+            </div>
+            {running && (
+              <div
+                style={{
+                  width: 14,
+                  height: 14,
+                  border: "2px solid #8ab4c8",
+                  borderTopColor: "transparent",
+                  borderRadius: "50%",
+                  animation: "spin 0.8s linear infinite",
+                }}
+              />
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button
+              type="button"
+              onClick={onRun}
+              disabled={running || pipelineRunning || !canRun}
+              style={{
+                background: "#1e2e1e",
+                color: running || pipelineRunning || !canRun ? "#444" : "#8fbc8f",
+                border: "1px solid #2a3a2a",
+                borderRadius: 4,
+                padding: "6px 14px",
+                fontSize: 11,
+                cursor:
+                  running || pipelineRunning || !canRun ? "not-allowed" : "pointer",
+                fontFamily: "sans-serif",
+              }}
+            >
+              Run
+            </button>
+            <button
+              type="button"
+              onClick={onApprove}
+              disabled={approved || status !== "review"}
+              style={{
+                background: approved ? "#1a2e1a" : "#c8a96e",
+                color: approved ? "#6a8a6a" : "#0a0a0a",
+                border: "none",
+                borderRadius: 4,
+                padding: "6px 14px",
+                fontSize: 11,
+                fontWeight: 600,
+                cursor:
+                  approved || status !== "review" ? "not-allowed" : "pointer",
+                fontFamily: "sans-serif",
+              }}
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              style={{
+                background: "#1a1a1a",
+                color: "#888",
+                border: "1px solid #2a2a2a",
+                borderRadius: 4,
+                padding: "6px 12px",
+                fontSize: 11,
+                cursor: "pointer",
+                fontFamily: "sans-serif",
+              }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+        <textarea
+          value={text}
+          onChange={(e) => onChangeText(e.target.value)}
+          onBlur={() => onBlurPersist(text)}
+          readOnly={approved}
+          style={{
+            flex: 1,
+            minHeight: 360,
+            width: "100%",
+            border: "none",
+            padding: 20,
+            fontSize: 13,
+            lineHeight: 1.75,
+            color: approved ? "#8ab88a" : "#ddd",
+            background: "#080808",
+            resize: "none",
+            fontFamily: "Georgia, serif",
+            outline: "none",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function ChatPanel({
-  activeStage,
+  chatStageId,
   stageOutputs,
   editingOutput,
   setEditingOutput,
@@ -712,7 +1237,13 @@ function ChatPanel({
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  useEffect(() => {
+    setMessages([]);
+  }, [chatStageId]);
 
   async function send() {
     const text = input.trim();
@@ -726,7 +1257,7 @@ function ChatPanel({
     try {
       const apiMessages = updated.map((m) => ({ role: m.role, content: m.content }));
       const currentOut =
-        editingOutput[activeStage] || stageOutputs[activeStage] || "";
+        editingOutput[chatStageId] || stageOutputs[chatStageId] || "";
       const reply = await runPipelineClaudeApi({
         stageId: "chat",
         messages: apiMessages,
@@ -761,130 +1292,232 @@ function ChatPanel({
   }
 
   function applyToStage(text: string) {
-    const current = editingOutput[activeStage] || stageOutputs[activeStage] || "";
+    const current =
+      editingOutput[chatStageId] || stageOutputs[chatStageId] || "";
     setEditingOutput((prev) => ({
       ...prev,
-      [activeStage]: current + "\n\n--- CHAT SUGGESTION ---\n" + text,
+      [chatStageId]: current + "\n\n--- CHAT SUGGESTION ---\n" + text,
     }));
   }
 
   return (
-    <div style={{ width: 320, borderLeft: "1px solid #181818", display: "flex", flexDirection: "column", background: "#0d0d0d", flexShrink: 0 }}>
+    <div
+      style={{
+        width: 320,
+        borderLeft: "1px solid #181818",
+        display: "flex",
+        flexDirection: "column",
+        background: "#0d0d0d",
+        flexShrink: 0,
+      }}
+    >
       <div style={{ padding: "14px 16px", borderBottom: "1px solid #181818" }}>
-        <div style={{ fontSize: 10, letterSpacing: "0.12em", color: "#555", textTransform: "uppercase", fontFamily: "sans-serif", marginBottom: 2 }}>Working on</div>
-        <div style={{ fontSize: 13, color: "#c8a96e" }}>Stage {activeStage}: {stageName}</div>
-        <div style={{ fontSize: 10, color: "#444", fontFamily: "sans-serif", marginTop: 4 }}>Ask me to tweak, rewrite, or improve any part of the current output. Changes apply to the editable area.</div>
+        <div
+          style={{
+            fontSize: 10,
+            letterSpacing: "0.12em",
+            color: "#555",
+            textTransform: "uppercase",
+            fontFamily: "sans-serif",
+            marginBottom: 2,
+          }}
+        >
+          Chat — section
+        </div>
+        <div style={{ fontSize: 13, color: "#c8a96e" }}>{stageName}</div>
+        <div
+          style={{
+            fontSize: 10,
+            color: "#444",
+            fontFamily: "sans-serif",
+            marginTop: 4,
+          }}
+        >
+          Context follows the section you open. Append applies to that
+          section&apos;s output.
+        </div>
       </div>
-
-      <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 12 }}>
+      <div
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          padding: "12px 14px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}
+      >
         {messages.length === 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {["Make the category attack more aggressive", "Rewrite the hook for a more skeptical avatar", "The proof section needs more emotional detail", "Make the CTA feel less like a pitch", "Tighten the mechanism section"].map((s, i) => (
-              <button key={i} onClick={() => { setInput(s); }} style={{ background: "#141414", border: "1px solid #1e1e1e", borderRadius: 6, padding: "8px 12px", fontSize: 11, color: "#777", cursor: "pointer", textAlign: "left", fontFamily: "sans-serif", lineHeight: 1.4 }}>
+            {[
+              "Make the category attack more aggressive",
+              "Rewrite the hook for a more skeptical avatar",
+              "The proof section needs more emotional detail",
+              "Make the CTA feel less like a pitch",
+              "Tighten the mechanism section",
+            ].map((s, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setInput(s)}
+                style={{
+                  background: "#141414",
+                  border: "1px solid #1e1e1e",
+                  borderRadius: 6,
+                  padding: "8px 12px",
+                  fontSize: 11,
+                  color: "#777",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  fontFamily: "sans-serif",
+                  lineHeight: 1.4,
+                }}
+              >
                 {s}
               </button>
             ))}
           </div>
         )}
         {messages.map((m, i) => (
-          <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start", gap: 4 }}>
-            <div style={{ fontSize: 9, letterSpacing: "0.1em", textTransform: "uppercase", color: "#444", fontFamily: "sans-serif" }}>
+          <div
+            key={i}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: m.role === "user" ? "flex-end" : "flex-start",
+              gap: 4,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 9,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                color: "#444",
+                fontFamily: "sans-serif",
+              }}
+            >
               {m.role === "user" ? "You" : "Claude"}
             </div>
-            <div style={{ maxWidth: "95%", padding: "10px 12px", borderRadius: m.role === "user" ? "10px 10px 2px 10px" : "10px 10px 10px 2px", background: m.role === "user" ? "#1a1a1a" : "#141414", border: `1px solid ${m.role === "user" ? "#252525" : "#1e1e1e"}`, fontSize: 12, lineHeight: 1.65, color: m.role === "user" ? "#bbb" : "#ccc", whiteSpace: "pre-wrap" }}>
+            <div
+              style={{
+                maxWidth: "95%",
+                padding: "10px 12px",
+                borderRadius:
+                  m.role === "user" ? "10px 10px 2px 10px" : "10px 10px 10px 2px",
+                background: m.role === "user" ? "#1a1a1a" : "#141414",
+                border: `1px solid ${m.role === "user" ? "#252525" : "#1e1e1e"}`,
+                fontSize: 12,
+                lineHeight: 1.65,
+                color: m.role === "user" ? "#bbb" : "#ccc",
+                whiteSpace: "pre-wrap",
+              }}
+            >
               {m.content}
             </div>
             {m.role === "assistant" && (
-              <button onClick={() => applyToStage(m.content)} style={{ fontSize: 9, color: "#555", background: "none", border: "none", cursor: "pointer", fontFamily: "sans-serif", padding: "2px 0", textAlign: "left" }}>
-                + append to stage output
+              <button
+                type="button"
+                onClick={() => applyToStage(m.content)}
+                style={{
+                  fontSize: 9,
+                  color: "#555",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  fontFamily: "sans-serif",
+                  padding: "2px 0",
+                  textAlign: "left",
+                }}
+              >
+                + append to section output
               </button>
             )}
           </div>
         ))}
         {loading && (
           <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-            <div style={{ padding: "10px 12px", background: "#141414", border: "1px solid #1e1e1e", borderRadius: "10px 10px 10px 2px", display: "flex", gap: 4 }}>
-              {[0,1,2].map(i => <div key={i} style={{ width: 5, height: 5, borderRadius: "50%", background: "#555", animation: "pulse 1.2s infinite", animationDelay: `${i*0.2}s` }} />)}
+            <div
+              style={{
+                padding: "10px 12px",
+                background: "#141414",
+                border: "1px solid #1e1e1e",
+                borderRadius: "10px 10px 10px 2px",
+                display: "flex",
+                gap: 4,
+              }}
+            >
+              {[0, 1, 2].map((i) => (
+                <div
+                  key={i}
+                  style={{
+                    width: 5,
+                    height: 5,
+                    borderRadius: "50%",
+                    background: "#555",
+                    animation: "pulse 1.2s infinite",
+                    animationDelay: `${i * 0.2}s`,
+                  }}
+                />
+              ))}
             </div>
           </div>
         )}
         <div ref={bottomRef} />
       </div>
-
-      <div style={{ borderTop: "1px solid #181818", padding: "10px 14px", background: "#0a0a0a" }}>
+      <div
+        style={{
+          borderTop: "1px solid #181818",
+          padding: "10px 14px",
+          background: "#0a0a0a",
+        }}
+      >
         <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-          <textarea ref={textareaRef} value={input} onChange={handleInput} onKeyDown={handleKey} placeholder="Ask Claude to tweak anything..." rows={1} disabled={loading} style={{ flex: 1, background: "#141414", border: "1px solid #222", borderRadius: 6, padding: "8px 12px", fontSize: 12, color: "#ddd", resize: "none", outline: "none", fontFamily: "Georgia, serif", lineHeight: 1.5, height: 38, minHeight: 38, maxHeight: 120 }} />
-          <button onClick={send} disabled={!input.trim() || loading} style={{ background: input.trim() && !loading ? "#c8a96e" : "#1a1a1a", color: input.trim() && !loading ? "#0a0a0a" : "#333", border: "none", borderRadius: 6, width: 36, height: 36, cursor: input.trim() && !loading ? "pointer" : "not-allowed", fontSize: 16, flexShrink: 0 }}>
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={handleInput}
+            onKeyDown={handleKey}
+            placeholder="Ask Claude to tweak this section..."
+            rows={1}
+            disabled={loading}
+            style={{
+              flex: 1,
+              background: "#141414",
+              border: "1px solid #222",
+              borderRadius: 6,
+              padding: "8px 12px",
+              fontSize: 12,
+              color: "#ddd",
+              resize: "none",
+              outline: "none",
+              fontFamily: "Georgia, serif",
+              lineHeight: 1.5,
+              height: 38,
+              minHeight: 38,
+              maxHeight: 120,
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => void send()}
+            disabled={!input.trim() || loading}
+            style={{
+              background: input.trim() && !loading ? "#c8a96e" : "#1a1a1a",
+              color: input.trim() && !loading ? "#0a0a0a" : "#333",
+              border: "none",
+              borderRadius: 6,
+              width: 36,
+              height: 36,
+              cursor: input.trim() && !loading ? "pointer" : "not-allowed",
+              fontSize: 16,
+              flexShrink: 0,
+            }}
+          >
             ↑
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-function StageOutput({
-  stageId,
-  output,
-  editingOutput,
-  setEditingOutput,
-  status,
-  onApprove,
-  onRerun,
-  onDraftPersist,
-}: StageOutputProps) {
-  const [copied, setCopied] = useState(false);
-  const currentEdit = editingOutput[stageId] ?? output;
-
-  function copy() {
-    navigator.clipboard.writeText(currentEdit);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
-
-  return (
-    <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
-        {status === "review" && (
-          <>
-            <div style={{ fontSize: 11, color: "#c8a96e", fontFamily: "sans-serif", marginRight: 4 }}>Review and edit below, then approve to continue</div>
-            <button onClick={onApprove} style={{ background: "#c8a96e", color: "#0a0a0a", border: "none", borderRadius: 4, padding: "7px 18px", fontSize: 11, cursor: "pointer", fontFamily: "sans-serif", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" }}>Approve</button>
-            <button onClick={onRerun} style={{ background: "#141414", color: "#888", border: "1px solid #222", borderRadius: 4, padding: "7px 14px", fontSize: 11, cursor: "pointer", fontFamily: "sans-serif" }}>Regenerate</button>
-          </>
-        )}
-        {status === "approved" && (
-          <div style={{ fontSize: 11, color: "#8fbc8f", fontFamily: "sans-serif", letterSpacing: "0.08em", textTransform: "uppercase" }}>Approved</div>
-        )}
-        <button onClick={copy} style={{ background: "#141414", color: copied ? "#8fbc8f" : "#888", border: "1px solid #222", borderRadius: 4, padding: "7px 14px", fontSize: 11, cursor: "pointer", fontFamily: "sans-serif", marginLeft: "auto" }}>
-          {copied ? "Copied" : "Copy"}
-        </button>
-      </div>
-      <textarea
-        value={currentEdit}
-        onChange={(e) =>
-          setEditingOutput((prev) => ({ ...prev, [stageId]: e.target.value }))
-        }
-        onBlur={() => {
-          if (status === "review" && onDraftPersist) {
-            onDraftPersist(stageId, currentEdit);
-          }
-        }}
-        readOnly={status === "approved"}
-        style={{
-          width: "100%",
-          minHeight: 500,
-          background: "#0d0d0d",
-          border: `1px solid ${status === "approved" ? "#1a2e1a" : "#222"}`,
-          borderRadius: 8,
-          padding: 18,
-          fontSize: 13,
-          color: status === "approved" ? "#8ab88a" : "#ddd",
-          resize: "vertical",
-          boxSizing: "border-box",
-          fontFamily: "Georgia, serif",
-          lineHeight: 1.8,
-        }}
-      />
     </div>
   );
 }
