@@ -884,7 +884,6 @@ export default function Page() {
       {/* Sidebar */}
       <div style={{ width: 220, borderRight: "1px solid #181818", display: "flex", flexDirection: "column", background: "#0d0d0d", flexShrink: 0 }}>
         <div style={{ padding: "20px 16px 16px", borderBottom: "1px solid #181818" }}>
-          <div style={{ fontSize: 10, letterSpacing: "0.15em", color: "#555", textTransform: "uppercase", fontFamily: "sans-serif", marginBottom: 4 }}>Grant Systems</div>
           <div style={{ fontSize: 15, color: "#c8a96e", fontWeight: 400 }}>VSL Pipeline</div>
         </div>
 

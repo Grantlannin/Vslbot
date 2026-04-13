@@ -163,7 +163,7 @@ function StandaloneIntakeChat() {
                 fontFamily: "sans-serif",
               }}
             >
-              {m.role === "user" ? "You" : "Intake Bot"}
+              {m.role === "user" ? "You" : "Grant's intake bot"}
             </div>
             <div
               style={{
@@ -201,7 +201,7 @@ function StandaloneIntakeChat() {
                 fontFamily: "sans-serif",
               }}
             >
-              Intake Bot
+              Grant's intake bot
             </div>
             <div
               style={{
@@ -416,46 +416,37 @@ export default function IntakePage() {
       `}</style>
       <header
         style={{
-          padding: "16px 20px",
+          padding: "12px 20px",
           borderBottom: "1px solid #181818",
           background: "#0d0d0d",
           flexShrink: 0,
         }}
       >
-        <div
-          style={{
-            fontSize: 10,
-            letterSpacing: "0.15em",
-            color: "#555",
-            textTransform: "uppercase",
-            fontFamily: "sans-serif",
-            marginBottom: 4,
-          }}
-        >
-          Grant Systems
-        </div>
         <h1
           style={{
             margin: 0,
-            fontSize: 18,
+            fontSize: 16,
             fontWeight: 400,
             color: "#c8a96e",
+            fontFamily: "Georgia, serif",
           }}
         >
-          VSL intake
+          {`Grant's intake bot`}
         </h1>
         <p
           style={{
             margin: "8px 0 0",
             fontSize: 12,
-            color: "#666",
+            color: "#888",
             fontFamily: "sans-serif",
-            lineHeight: 1.5,
-            maxWidth: 520,
+            lineHeight: 1.55,
+            maxWidth: 560,
           }}
         >
-          Answer each question in the chat. When you finish, generate your intake
-          document, copy it, and email it to us.
+          The bot will walk you through everything we need to get you to succeed.
+          Please answer each question in the chat as accurately as possible. When
+          you finish, simply generate your intake document, copy it, and email it
+          to us.
         </p>
       </header>
       <main
