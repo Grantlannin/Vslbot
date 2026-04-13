@@ -490,7 +490,9 @@ function IntakeChat({ onComplete }: { onComplete: (doc: string) => void }) {
       setMessages([{ role: "assistant" as const, content: clean }]);
       if (text.includes("[INTERVIEW_COMPLETE]")) setDone(true);
     } catch (e) {
-      setMessages([{ role: "assistant", content: "Connection error. Please refresh." }]);
+      const msg =
+        e instanceof Error ? e.message : "Something went wrong. Please refresh.";
+      setMessages([{ role: "assistant", content: msg }]);
     }
     setLoading(false);
   }
@@ -511,7 +513,8 @@ function IntakeChat({ onComplete }: { onComplete: (doc: string) => void }) {
       setMessages(next);
       if (raw.includes("[INTERVIEW_COMPLETE]")) setDone(true);
     } catch (e) {
-      setMessages([...updated, { role: "assistant", content: "Error. Please try again." }]);
+      const msg = e instanceof Error ? e.message : "Error. Please try again.";
+      setMessages([...updated, { role: "assistant", content: msg }]);
     }
     setLoading(false);
   }
@@ -1166,7 +1169,8 @@ ${stageOutputs[4] ? `VSL SCRIPT (first 800 chars):\n${stageOutputs[4].substring(
             : "Something went wrong.";
       setMessages([...updated, { role: "assistant", content: reply }]);
     } catch (e) {
-      setMessages([...updated, { role: "assistant", content: "Connection error. Try again." }]);
+      const msg = e instanceof Error ? e.message : "Error. Try again.";
+      setMessages([...updated, { role: "assistant", content: msg }]);
     }
     setLoading(false);
   }

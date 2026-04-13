@@ -1,5 +1,7 @@
+export const runtime = "nodejs";
+
 export async function POST(request) {
-  const key = process.env.ANTHROPIC_API_KEY;
+  const key = process.env.ANTHROPIC_API_KEY?.trim();
   if (!key) {
     return Response.json(
       { error: { message: "ANTHROPIC_API_KEY is not set on the server." } },

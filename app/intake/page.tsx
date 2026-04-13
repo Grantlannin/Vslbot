@@ -39,10 +39,10 @@ function StandaloneIntakeChat() {
       const clean = text.replace(/\[INTERVIEW_COMPLETE\]/g, "").trim();
       setMessages([{ role: "assistant", content: clean }]);
       if (text.includes("[INTERVIEW_COMPLETE]")) setDone(true);
-    } catch {
-      setMessages([
-        { role: "assistant", content: "Connection error. Please refresh." },
-      ]);
+    } catch (e) {
+      const msg =
+        e instanceof Error ? e.message : "Something went wrong. Please refresh.";
+      setMessages([{ role: "assistant", content: msg }]);
     }
     setLoading(false);
   }
@@ -73,11 +73,9 @@ function StandaloneIntakeChat() {
       ];
       setMessages(next);
       if (raw.includes("[INTERVIEW_COMPLETE]")) setDone(true);
-    } catch {
-      setMessages([
-        ...updated,
-        { role: "assistant", content: "Error. Please try again." },
-      ]);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Error. Please try again.";
+      setMessages([...updated, { role: "assistant", content: msg }]);
     }
     setLoading(false);
   }
@@ -96,8 +94,12 @@ function StandaloneIntakeChat() {
         2000,
       );
       setDoc(text);
-    } catch {
-      setDoc("Error generating document. Please try again.");
+    } catch (e) {
+      setDoc(
+        e instanceof Error
+          ? e.message
+          : "Error generating document. Please try again.",
+      );
     }
     setGeneratingDoc(false);
   }
