@@ -157,11 +157,16 @@ function buildPipelineAnthropicBody(body) {
     return { error: `Invalid stageId for pipeline: ${JSON.stringify(body.stageId)}` };
   }
 
-  const maxTokensDefault = stageName === "chat" ? 1500 : 4000;
   const max_tokens =
-    typeof body.maxTokens === "number" && body.maxTokens > 0
-      ? body.maxTokens
-      : maxTokensDefault;
+    stageName === "chat"
+      ? typeof body.maxTokens === "number" && body.maxTokens > 0
+        ? body.maxTokens
+        : 1500
+      : stageName === "youtube"
+        ? 8000
+        : typeof body.maxTokens === "number" && body.maxTokens > 0
+          ? body.maxTokens
+          : 4000;
 
   if (stageName === "chat") {
     const system = buildChatSystem(body);
