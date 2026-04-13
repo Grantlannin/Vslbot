@@ -27,9 +27,33 @@ type ChatPanelProps = {
 };
 
 type AnthropicResponseJson = {
-  error?: { message?: string; type?: string };
+  type?: string;
+  error?: {
+    message?: string;
+    type?: string;
+    details?: unknown;
+    httpStatus?: number;
+  };
   content?: { type: string; text?: string }[];
 };
+
+function formatClaudeApiError(error: NonNullable<AnthropicResponseJson["error"]>) {
+  const parts: string[] = [];
+  if (error.message) parts.push(error.message);
+  if (error.details !== undefined && error.details !== null) {
+    if (typeof error.details === "string") parts.push(error.details);
+    else {
+      try {
+        parts.push(JSON.stringify(error.details, null, 2));
+      } catch {
+        parts.push(String(error.details));
+      }
+    }
+  }
+  if (error.httpStatus != null)
+    parts.push(`HTTP status: ${error.httpStatus}`);
+  return parts.join("\n\n").trim() || "Request failed";
+}
 
 async function runPipelineClaudeApi(
   body: Record<string, unknown>,
@@ -46,10 +70,13 @@ async function runPipelineClaudeApi(
     throw new Error("Invalid JSON from server");
   }
   if (!res.ok) {
-    throw new Error(data.error?.message ?? res.statusText);
+    if (data.error) {
+      throw new Error(formatClaudeApiError(data.error));
+    }
+    throw new Error(res.statusText || `Request failed (HTTP ${res.status})`);
   }
   if (data.error?.message) {
-    throw new Error(data.error.message);
+    throw new Error(formatClaudeApiError(data.error));
   }
   const block = data.content?.[0];
   if (block?.type === "text" && typeof block.text === "string") {
@@ -116,6 +143,7 @@ export default function Page() {
   const [stageStatus, setStageStatus] = useState<Record<number, StageStatus>>(
     {},
   );
+  const [stageErrors, setStageErrors] = useState<Record<number, string>>({});
   const [runningStages, setRunningStages] = useState<Record<number, boolean>>(
     {},
   );
@@ -174,6 +202,7 @@ export default function Page() {
       console.error("pipeline_stages load:", error);
       setStageOutputs({});
       setStageStatus({});
+      setStageErrors({});
       setEditingOutput({});
       setIntakeDocument("");
       return;
@@ -194,6 +223,7 @@ export default function Page() {
     }
     setStageOutputs(outputs);
     setStageStatus(statuses);
+    setStageErrors({});
     setEditingOutput(editing);
     if (legacyIntake) setIntakeDocument(legacyIntake);
   }
@@ -218,6 +248,7 @@ export default function Page() {
     setActiveClient(client);
     setStageOutputs({});
     setStageStatus({});
+    setStageErrors({});
     setEditingOutput({});
     setIntakeDocument("");
     setOnboardNotes("");
@@ -254,6 +285,11 @@ export default function Page() {
   ): Promise<string> {
     const priorOut = outputsRef.current[stageId] ?? "";
     setRunning(stageId, true);
+    setStageErrors((prev) => {
+      const next = { ...prev };
+      delete next[stageId];
+      return next;
+    });
     setStageStatus((prev) => ({ ...prev, [stageId]: "running" }));
     await upsertPipelineStage(clientId, stageId, priorOut, "running");
     try {
@@ -269,11 +305,18 @@ export default function Page() {
       setStageOutputs((prev) => ({ ...prev, [stageId]: output }));
       setEditingOutput((prev) => ({ ...prev, [stageId]: output }));
       setStageStatus((prev) => ({ ...prev, [stageId]: "review" }));
+      setStageErrors((prev) => {
+        const next = { ...prev };
+        delete next[stageId];
+        return next;
+      });
       outputsRef.current = { ...outputsRef.current, [stageId]: output };
       await upsertPipelineStage(clientId, stageId, output, "review");
       return output;
     } catch (e) {
       console.error("runSingleStage", stageId, e);
+      const errText = e instanceof Error ? e.message : String(e);
+      setStageErrors((prev) => ({ ...prev, [stageId]: errText }));
       setStageStatus((prev) => ({ ...prev, [stageId]: "error" }));
       await upsertPipelineStage(clientId, stageId, priorOut, "error");
       throw e;
@@ -389,6 +432,11 @@ export default function Page() {
     const finalOutput = editingOutput[stageId] || stageOutputs[stageId] || "";
     setStageOutputs((prev) => ({ ...prev, [stageId]: finalOutput }));
     setStageStatus((prev) => ({ ...prev, [stageId]: "approved" }));
+    setStageErrors((prev) => {
+      const next = { ...prev };
+      delete next[stageId];
+      return next;
+    });
     setEditingOutput((prev) => ({ ...prev, [stageId]: finalOutput }));
     outputsRef.current = { ...outputsRef.current, [stageId]: finalOutput };
     await upsertPipelineStage(cid, stageId, finalOutput, "approved");
@@ -842,10 +890,15 @@ export default function Page() {
                   const isRun = runningStages[sec.id] || false;
                   const text =
                     editingOutput[sec.id] ?? stageOutputs[sec.id] ?? "";
+                  const errBody = stageErrors[sec.id];
                   const preview =
-                    text.trim().length > 0
-                      ? text.slice(0, 280) + (text.length > 280 ? "…" : "")
-                      : "No output yet.";
+                    st === "error" && errBody
+                      ? errBody
+                      : text.trim().length > 0
+                        ? text.slice(0, 280) + (text.length > 280 ? "…" : "")
+                        : st === "error"
+                          ? "This stage is in error state. Run again to capture the API error message."
+                          : "No output yet.";
                   return (
                     <div
                       key={sec.id}
@@ -924,11 +977,12 @@ export default function Page() {
                       <div
                         style={{
                           fontSize: 11,
-                          color: "#666",
+                          color: st === "error" ? "#c87878" : "#666",
                           lineHeight: 1.6,
                           whiteSpace: "pre-wrap",
                           flex: 1,
-                          overflow: "hidden",
+                          overflow: "auto",
+                          maxHeight: st === "error" ? 200 : undefined,
                           fontFamily: "sans-serif",
                         }}
                       >
@@ -1025,6 +1079,7 @@ export default function Page() {
           name={expandedMeta.name}
           color={expandedMeta.color}
           status={stageStatus[expandedStageId]}
+          errorText={stageErrors[expandedStageId]}
           text={editingOutput[expandedStageId] ?? stageOutputs[expandedStageId] ?? ""}
           running={runningStages[expandedStageId] || false}
           onClose={() => setExpandedStageId(null)}
@@ -1047,6 +1102,7 @@ function ExpandedSectionModal({
   name,
   color,
   status,
+  errorText,
   text,
   running,
   onClose,
@@ -1061,6 +1117,7 @@ function ExpandedSectionModal({
   name: string;
   color: string;
   status: StageStatus;
+  errorText?: string;
   text: string;
   running: boolean;
   onClose: () => void;
@@ -1072,6 +1129,7 @@ function ExpandedSectionModal({
   pipelineRunning: boolean;
 }) {
   const approved = status === "approved";
+  const showError = status === "error" && Boolean(errorText?.trim());
   return (
     <div
       style={{
@@ -1199,6 +1257,28 @@ function ExpandedSectionModal({
             </button>
           </div>
         </div>
+        {showError && (
+          <div
+            style={{
+              flexShrink: 0,
+              margin: "0 18px",
+              marginTop: 12,
+              padding: 12,
+              borderRadius: 6,
+              border: "1px solid #4a2828",
+              background: "#140808",
+              color: "#e8a0a0",
+              fontSize: 12,
+              lineHeight: 1.6,
+              whiteSpace: "pre-wrap",
+              fontFamily: "sans-serif",
+              maxHeight: 200,
+              overflow: "auto",
+            }}
+          >
+            {errorText}
+          </div>
+        )}
         <textarea
           value={text}
           onChange={(e) => onChangeText(e.target.value)}

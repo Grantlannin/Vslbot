@@ -1,9 +1,58 @@
 export const runtime = "nodejs";
-/** Allow long model turns (Hobby caps at 10s; Pro/Enterprise can use more). */
-export const maxDuration = 60;
+/** Vercel: max serverless duration (seconds). Requires Pro/Enterprise for >60s on most plans. */
+export const maxDuration = 300;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Uniform error JSON for the client: always includes message + full details. */
+function anthropicErrorResponse(httpStatus, upstreamJson) {
+  const s = httpStatus || 502;
+  const message =
+    (upstreamJson &&
+      typeof upstreamJson.error?.message === "string" &&
+      upstreamJson.error.message) ||
+    (upstreamJson &&
+      typeof upstreamJson.message === "string" &&
+      upstreamJson.message) ||
+    `Anthropic request failed (HTTP ${s})`;
+  const errType =
+    (upstreamJson && upstreamJson.error && upstreamJson.error.type) ||
+    (upstreamJson && upstreamJson.type) ||
+    "api_error";
+  return Response.json(
+    {
+      type: "error",
+      error: {
+        type: errType,
+        message,
+        details: upstreamJson && Object.keys(upstreamJson).length ? upstreamJson : {},
+        httpStatus: s,
+      },
+    },
+    { status: s },
+  );
+}
+
+function parseFailureResponse(httpStatus, rawText, parseErr) {
+  const s = httpStatus || 502;
+  const message = `Anthropic returned non-JSON (HTTP ${s}). ${parseErr ? String(parseErr.message || parseErr) : ""}`.trim();
+  return Response.json(
+    {
+      type: "error",
+      error: {
+        type: "parse_error",
+        message,
+        details: {
+          rawBody: typeof rawText === "string" ? rawText : String(rawText ?? ""),
+          parseError: parseErr ? String(parseErr) : undefined,
+        },
+        httpStatus: s,
+      },
+    },
+    { status: s },
+  );
 }
 
 const PROMPTS = {
@@ -217,17 +266,7 @@ async function forwardAnthropic(anthropicBody, key) {
         status,
       );
       console.error("[/api/claude] Anthropic raw body (full):", rawText);
-      const message = `Anthropic returned non-JSON (HTTP ${status}). First 500 chars: ${rawText.slice(0, 500)}`;
-      return Response.json(
-        {
-          type: "error",
-          error: {
-            type: "parse_error",
-            message,
-          },
-        },
-        { status: status || 502 },
-      );
+      return parseFailureResponse(status, rawText, parseErr);
     }
 
     if (upstream.ok) {
@@ -248,7 +287,7 @@ async function forwardAnthropic(anthropicBody, key) {
       data?.error?.type === "overloaded_error";
 
     if (!overloaded || attempt === maxAttempts) {
-      return Response.json(data, { status });
+      return anthropicErrorResponse(status, data);
     }
 
     const retryAfterSec = parseInt(
@@ -279,6 +318,8 @@ export async function POST(request) {
         error: {
           type: "configuration_error",
           message: "ANTHROPIC_API_KEY is not set on the server.",
+          details: { env: "ANTHROPIC_API_KEY missing or empty" },
+          httpStatus: 500,
         },
       },
       { status: 500 },
@@ -301,6 +342,8 @@ export async function POST(request) {
         error: {
           type: "invalid_request_error",
           message: "Invalid JSON body.",
+          details: { parseError: String(err) },
+          httpStatus: 400,
         },
       },
       { status: 400 },
@@ -317,6 +360,8 @@ export async function POST(request) {
           error: {
             type: "invalid_request_error",
             message: built.error,
+            details: { stageId: body.stageId, validation: built.error },
+            httpStatus: 400,
           },
         },
         { status: 400 },
@@ -403,17 +448,7 @@ export async function POST(request) {
         status,
       );
       console.error("[/api/claude] Anthropic raw body (full):", rawText);
-      const message = `Anthropic returned non-JSON (HTTP ${status}). First 500 chars: ${rawText.slice(0, 500)}`;
-      return Response.json(
-        {
-          type: "error",
-          error: {
-            type: "parse_error",
-            message,
-          },
-        },
-        { status: status || 502 },
-      );
+      return parseFailureResponse(status, rawText, parseErr);
     }
 
     if (upstream.ok) {
@@ -434,7 +469,7 @@ export async function POST(request) {
       data?.error?.type === "overloaded_error";
 
     if (!overloaded || attempt === maxAttempts) {
-      return Response.json(data, { status });
+      return anthropicErrorResponse(status, data);
     }
 
     const retryAfterSec = parseInt(
