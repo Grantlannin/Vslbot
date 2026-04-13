@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+/** Only /pipeline is gated. /intake and all other routes stay public. */
+
 export function middleware(request) {
   const password = process.env.PIPELINE_PASSWORD;
   if (!password) {
