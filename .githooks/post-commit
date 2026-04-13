@@ -1,0 +1,12 @@
+#!/bin/sh
+# After each commit, push current branch so Vercel (or other CI) deploys from origin.
+cd "$(git rev-parse --show-toplevel)" 2>/dev/null || exit 0
+git remote get-url origin >/dev/null 2>&1 || exit 0
+branch=$(git symbolic-ref --short HEAD 2>/dev/null) || exit 0
+[ -z "$branch" ] && exit 0
+echo "[post-commit] Pushing $branch → origin..."
+if git push origin "$branch"; then
+  echo "[post-commit] Done."
+else
+  echo "[post-commit] Push failed. Fix auth/network, then: git push origin $branch"
+fi
