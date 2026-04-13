@@ -49,6 +49,40 @@ export async function POST(request) {
   console.log("[/api/claude] forwarding to Anthropic, model:", body?.model);
 
   const payload = JSON.stringify(body);
+
+  const systemLen =
+    typeof body.system === "string"
+      ? body.system.length
+      : body.system != null
+        ? JSON.stringify(body.system).length
+        : 0;
+
+  const messagesSummary = Array.isArray(body.messages)
+    ? body.messages.map((m, i) => ({
+        index: i,
+        role: m?.role,
+        contentChars:
+          typeof m?.content === "string"
+            ? m.content.length
+            : m?.content != null
+              ? JSON.stringify(m.content).length
+              : 0,
+      }))
+    : { error: "body.messages is not an array", value: body.messages };
+
+  console.log("[/api/claude] Outbound request summary:", {
+    model: body?.model,
+    max_tokens: body?.max_tokens,
+    systemPromptChars: systemLen,
+    messages: messagesSummary,
+    payloadTotalChars: payload.length,
+  });
+
+  console.log(
+    "[/api/claude] Outbound raw JSON body (complete string sent to Anthropic):",
+    payload,
+  );
+
   const maxAttempts = 3;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -63,6 +97,17 @@ export async function POST(request) {
       },
       body: payload,
     });
+
+    const responseHeaders = Object.fromEntries(upstream.headers.entries());
+    console.log(
+      "[/api/claude] Anthropic response HTTP:",
+      upstream.status,
+      upstream.statusText,
+    );
+    console.log(
+      "[/api/claude] Anthropic response headers (complete):",
+      JSON.stringify(responseHeaders, null, 2),
+    );
 
     const rawText = await upstream.text();
     const status = upstream.status;
